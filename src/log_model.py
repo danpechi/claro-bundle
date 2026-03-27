@@ -18,7 +18,7 @@ from mlflow.types.schema import ColSpec, Schema
 CATALOG    = "main"
 SCHEMA     = "claro"
 MODEL_NAME = f"{CATALOG}.{SCHEMA}.emotion_speech_model"
-EXPERIMENT = "/Shared/claro_emotion_model/experiment"
+EXPERIMENT = "claro-emotion-model-registration"
 
 # Resolve emotion_model.py relative to this script.
 # Use inspect.getfile() instead of __file__ — Databricks runs scripts via
