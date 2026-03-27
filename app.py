@@ -361,6 +361,16 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
+    st.markdown("### 🗄️ Data Source")
+    uc_catalog = st.text_input("UC Catalog", value=UC_CATALOG)
+    uc_schema  = st.text_input("UC Schema",  value=UC_SCHEMA)
+    uc_suffix  = st.text_input(
+        "Table suffix",
+        value=UC_USER_SUFFIX,
+        help="Suffix appended to table names (e.g. _dan). Leave empty for default deployment.",
+    )
+
+    st.divider()
     st.markdown("### 📊 Monitor Filters")
 
     channel_opts = ["All", "Call Center", "WhatsApp", "Website", "In-Branch"]
@@ -409,10 +419,10 @@ with tab1:
 
     # ── Load data ────────────────────────────────────────────────────────
 
-    all_scores = load_scores(UC_CATALOG, UC_SCHEMA, UC_USER_SUFFIX)
+    all_scores = load_scores(uc_catalog, uc_schema, uc_suffix)
 
     if not all_scores:
-        _tbl = f"{UC_CATALOG}.{UC_SCHEMA}.scores{UC_USER_SUFFIX}"
+        _tbl = f"{uc_catalog}.{uc_schema}.scores{uc_suffix}"
         st.warning(
             f"No data found in `{_tbl}`. "
             "Run the **claro_setup** job first to populate the tables."
@@ -575,7 +585,7 @@ with tab1:
 
                     st.markdown("---")
                     st.markdown("**Transcripción**")
-                    turns = load_transcript(conv_id, UC_CATALOG, UC_SCHEMA, UC_USER_SUFFIX)
+                    turns = load_transcript(conv_id, uc_catalog, uc_schema, uc_suffix)
                     if turns:
                         for turn in turns:
                             role    = turn["role"]
