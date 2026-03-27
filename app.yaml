@@ -3,5 +3,17 @@ command:
   - "run"
   - "app.py"
 
-# DATABRICKS_HOST and DATABRICKS_TOKEN are injected automatically
-# by the Databricks Apps runtime — no secrets config needed.
+# DATABRICKS_HOST, DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET are
+# injected automatically by the Databricks Apps runtime.
+#
+# Override these if you deployed with non-default bundle variables:
+#   --var catalog=<your_catalog>
+#   --var schema=<your_schema>
+#   --var user_suffix=<your_suffix>  (e.g. _dan in shared workspaces)
+env:
+  - name: UC_CATALOG
+    value: "main"
+  - name: UC_SCHEMA
+    value: "claro"
+  - name: UC_USER_SUFFIX
+    value: ""
