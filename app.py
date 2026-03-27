@@ -54,6 +54,8 @@ def _db_creds():
     cfg.read(Path.home() / ".databrickscfg")
     host  = cfg.get("DEFAULT", "host",  fallback="") or os.environ.get("DATABRICKS_HOST",  "")
     token = cfg.get("DEFAULT", "token", fallback="") or os.environ.get("DATABRICKS_TOKEN", "")
+    if host and not host.startswith("http"):
+        host = "https://" + host
     return host.rstrip("/"), token
 
 HOST, TOKEN = _db_creds()
