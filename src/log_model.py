@@ -3,6 +3,7 @@ Register the Claro Emotion Model in Unity Catalog.
 Run via the claro_setup job (Task 1 — register_model).
 """
 import base64
+import inspect
 import io
 import os
 import struct
@@ -19,9 +20,11 @@ SCHEMA     = "claro"
 MODEL_NAME = f"{CATALOG}.{SCHEMA}.emotion_speech_model"
 EXPERIMENT = "/Shared/claro_emotion_model/experiment"
 
-# Resolve emotion_model.py relative to this file — works regardless of where
-# the bundle deploys these scripts in the workspace.
-_HERE            = os.path.dirname(os.path.abspath(__file__))
+# Resolve emotion_model.py relative to this script.
+# Use inspect.getfile() instead of __file__ — Databricks runs scripts via
+# exec() which doesn't set __file__, but the compiled code object still
+# carries the correct filename.
+_HERE            = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 EMOTION_MODEL_PY = os.path.join(_HERE, "emotion_model.py")
 
 mlflow.set_registry_uri("databricks-uc")
