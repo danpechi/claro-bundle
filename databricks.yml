@@ -11,6 +11,9 @@ variables:
   schema:
     description: "UC schema name — will be created if it does not exist"
     default: "claro"
+  user_suffix:
+    description: "Optional suffix for table/app names to avoid collisions in shared workspaces (e.g. _dan). Leave empty for single-user or customer deployments."
+    default: ""
 
 targets:
   dev:

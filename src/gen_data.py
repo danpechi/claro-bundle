@@ -1,14 +1,14 @@
 """
 Generate synthetic Claro Perú conversations and quality scores.
-Writes Delta tables {catalog}.{schema}.conversations_{short} and
-{catalog}.{schema}.scores_{short} — user-specific to avoid collisions.
+Writes Delta tables {catalog}.{schema}.conversations{suffix} and
+{catalog}.{schema}.scores{suffix}.
 
 Run via the claro_setup job (parallel with register_model).
 
-sys.argv[1] = catalog  (default: main)
-sys.argv[2] = schema   (default: claro)
+sys.argv[1] = catalog     (default: main)
+sys.argv[2] = schema      (default: claro)
+sys.argv[3] = user_suffix (default: "", e.g. "_dan" in shared workspaces)
 """
-import inspect
 import sys
 from datetime import datetime, timedelta
 
@@ -17,15 +17,13 @@ from pyspark.sql import SparkSession
 
 CATALOG = sys.argv[1] if len(sys.argv) > 1 else "main"
 SCHEMA  = sys.argv[2] if len(sys.argv) > 2 else "claro"
+SUFFIX  = sys.argv[3] if len(sys.argv) > 3 else ""
 
-_w  = WorkspaceClient()
-_me = _w.current_user.me()
-_short = "".join(c for c in (_me.user_name or "").split("@")[0] if c.isalnum())[:8]
-
-CONV_TABLE   = f"{CATALOG}.{SCHEMA}.conversations_{_short}"
-SCORES_TABLE = f"{CATALOG}.{SCHEMA}.scores_{_short}"
+CONV_TABLE   = f"{CATALOG}.{SCHEMA}.conversations{SUFFIX}"
+SCORES_TABLE = f"{CATALOG}.{SCHEMA}.scores{SUFFIX}"
 
 # Ensure schema exists
+_w = WorkspaceClient()
 try:
     _w.schemas.get(f"{CATALOG}.{SCHEMA}")
 except Exception:
@@ -232,6 +230,6 @@ print(f"✅ {len(conv_rows)} conversation turns → {CONV_TABLE}")
 spark.createDataFrame(scores_df).write.mode("overwrite").saveAsTable(SCORES_TABLE)
 print(f"✅ {len(scores_rows)} score rows → {SCORES_TABLE}")
 
-print(f"\nUser suffix: {_short}")
+print(f"\nSuffix used: '{SUFFIX}' (set --var user_suffix=_yourname in shared workspaces)")
 print(f"Conversations table: {CONV_TABLE}")
 print(f"Scores table:        {SCORES_TABLE}")

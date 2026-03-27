@@ -35,38 +35,49 @@ UC_SCHEMA  = os.environ.get("UC_SCHEMA",  "claro")
 DEFAULT_EMOTION_ENDPOINT = os.environ.get("EMOTION_ENDPOINT_NAME", "")
 DEFAULT_WHISPER_ENDPOINT = os.environ.get("WHISPER_ENDPOINT_NAME", "")
 
-# ── User suffix (for user-specific table names, same logic as gen_data.py) ─
+# ── Table suffix (injected by DAB via UC_USER_SUFFIX env var) ─────────────
+# Empty in customer/single-user workspaces; set to e.g. "_dan" by SEs
+# deploying into a shared workspace via: databricks bundle deploy --var user_suffix=_dan
 
-@st.cache_resource
-def _get_user_suffix() -> str:
-    """Derive 8-char alphanumeric suffix from the current user's email prefix."""
-    try:
-        from databricks.sdk import WorkspaceClient
-        me = WorkspaceClient().current_user.me()
-        return "".join(c for c in (me.user_name or "").split("@")[0] if c.isalnum())[:8]
-    except Exception:
-        return os.environ.get("UC_USER_SUFFIX", "")
+UC_USER_SUFFIX = os.environ.get("UC_USER_SUFFIX", "")
 
 # ── Credentials ───────────────────────────────────────────────────────────
+# In Databricks Apps the SDK picks up DATABRICKS_HOST + DATABRICKS_CLIENT_ID +
+# DATABRICKS_CLIENT_SECRET and does OAuth M2M automatically.
+# For local dev it falls back to ~/.databrickscfg or DATABRICKS_TOKEN.
 
-def _db_creds():
-    cfg = configparser.ConfigParser()
-    cfg.read(Path.home() / ".databrickscfg")
-    host  = cfg.get("DEFAULT", "host",  fallback="") or os.environ.get("DATABRICKS_HOST",  "")
-    token = cfg.get("DEFAULT", "token", fallback="") or os.environ.get("DATABRICKS_TOKEN", "")
-    if host and not host.startswith("http"):
-        host = "https://" + host
-    return host.rstrip("/"), token
+@st.cache_resource
+def _get_databricks_client():
+    from databricks.sdk import WorkspaceClient
+    return WorkspaceClient()
 
-HOST, TOKEN = _db_creds()
-_HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+
+def _auth():
+    """Return (host, headers) with a fresh OAuth token on every call."""
+    try:
+        w = _get_databricks_client()
+        host = w.config.host or ""
+        if not host.startswith("http"):
+            host = "https://" + host
+        headers = {**w.config.authenticate(), "Content-Type": "application/json"}
+        return host.rstrip("/"), headers
+    except Exception:
+        # Local dev fallback
+        cfg = configparser.ConfigParser()
+        cfg.read(Path.home() / ".databrickscfg")
+        host  = cfg.get("DEFAULT", "host",  fallback="") or os.environ.get("DATABRICKS_HOST", "")
+        token = cfg.get("DEFAULT", "token", fallback="") or os.environ.get("DATABRICKS_TOKEN", "")
+        if host and not host.startswith("http"):
+            host = "https://" + host
+        return host.rstrip("/"), {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 # ── SQL helper ─────────────────────────────────────────────────────────────
 
 @st.cache_resource
 def _get_wh_id() -> str:
-    url = f"{HOST}/api/2.0/sql/warehouses"
-    r   = requests.get(url, headers=_HEADERS, timeout=15)
+    host, headers = _auth()
+    url = f"{host}/api/2.0/sql/warehouses"
+    r   = requests.get(url, headers=headers, timeout=15)
     r.raise_for_status()
     whs     = r.json().get("warehouses", [])
     running = [w for w in whs if w.get("state") == "RUNNING"]
@@ -74,8 +85,9 @@ def _get_wh_id() -> str:
 
 
 def sql_run(query: str) -> list[dict]:
+    host, headers = _auth()
     wh_id = _get_wh_id()
-    url   = f"{HOST}/api/2.0/sql/statements"
+    url   = f"{host}/api/2.0/sql/statements"
     payload = {
         "statement":       query,
         "warehouse_id":    wh_id,
@@ -84,7 +96,7 @@ def sql_run(query: str) -> list[dict]:
         "disposition":     "INLINE",
         "format":          "JSON_ARRAY",
     }
-    r = requests.post(url, json=payload, headers=_HEADERS, timeout=60)
+    r = requests.post(url, json=payload, headers=headers, timeout=60)
     r.raise_for_status()
     body   = r.json()
     status = body.get("status", {}).get("state", "")
@@ -172,9 +184,10 @@ def encode_audio(uploaded_file) -> str:
 
 def call_emotion_endpoint(audio_b64: str, endpoint_name: str) -> dict:
     """Call the emotion endpoint with base64 audio, return {emotion, scores}."""
-    url     = f"{HOST}/serving-endpoints/{endpoint_name}/invocations"
+    host, headers = _auth()
+    url     = f"{host}/serving-endpoints/{endpoint_name}/invocations"
     payload = {"dataframe_records": [{"audio_base64": audio_b64}]}
-    r = requests.post(url, json=payload, headers=_HEADERS, timeout=120)
+    r = requests.post(url, json=payload, headers=headers, timeout=120)
     r.raise_for_status()
     body = r.json()
     # MLflow pyfunc returns {"predictions": [...]}
@@ -189,14 +202,15 @@ def call_whisper_endpoint(audio_b64: str, endpoint_name: str) -> str:
 
     Uses dataframe_split format matching the whisper-dan deployment.
     """
-    url = f"{HOST}/serving-endpoints/{endpoint_name}/invocations"
+    host, headers = _auth()
+    url = f"{host}/serving-endpoints/{endpoint_name}/invocations"
     payload = {
         "dataframe_split": {
             "columns": [0],
             "data":    [[audio_b64]],
         }
     }
-    r = requests.post(url, json=payload, headers=_HEADERS, timeout=120)
+    r = requests.post(url, json=payload, headers=headers, timeout=120)
     r.raise_for_status()
     body  = r.json()
     preds = body.get("predictions", [])
@@ -395,11 +409,10 @@ with tab1:
 
     # ── Load data ────────────────────────────────────────────────────────
 
-    _suffix    = _get_user_suffix()
-    all_scores = load_scores(UC_CATALOG, UC_SCHEMA, _suffix)
+    all_scores = load_scores(UC_CATALOG, UC_SCHEMA, UC_USER_SUFFIX)
 
     if not all_scores:
-        _tbl = f"{UC_CATALOG}.{UC_SCHEMA}.scores_{_suffix}" if _suffix else f"{UC_CATALOG}.{UC_SCHEMA}.scores"
+        _tbl = f"{UC_CATALOG}.{UC_SCHEMA}.scores{UC_USER_SUFFIX}"
         st.warning(
             f"No data found in `{_tbl}`. "
             "Run the **claro_setup** job first to populate the tables."
@@ -562,7 +575,7 @@ with tab1:
 
                     st.markdown("---")
                     st.markdown("**Transcripción**")
-                    turns = load_transcript(conv_id, UC_CATALOG, UC_SCHEMA, _suffix)
+                    turns = load_transcript(conv_id, UC_CATALOG, UC_SCHEMA, UC_USER_SUFFIX)
                     if turns:
                         for turn in turns:
                             role    = turn["role"]

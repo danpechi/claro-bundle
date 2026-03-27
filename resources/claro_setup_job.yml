@@ -13,6 +13,7 @@ resources:
             parameters:
               - "${var.catalog}"
               - "${var.schema}"
+              - "${var.user_suffix}"
           environment_key: ml_env
 
         - task_key: register_model

@@ -7,5 +7,6 @@ resources:
       config:
         UC_CATALOG: "${var.catalog}"
         UC_SCHEMA: "${var.schema}"
+        UC_USER_SUFFIX: "${var.user_suffix}"
         # EMOTION_ENDPOINT_NAME is set manually in the app sidebar.
         # The claro_setup job prints the exact endpoint name in its logs.
