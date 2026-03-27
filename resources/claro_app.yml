@@ -1,0 +1,6 @@
+resources:
+  apps:
+    claro_app:
+      name: "claro-monitor"
+      description: "Claro Perú — Quality Monitor · Audio Transcription · Emotion Analysis"
+      source_code_path: ..

@@ -1,0 +1,7 @@
+command:
+  - "streamlit"
+  - "run"
+  - "app.py"
+
+# DATABRICKS_HOST and DATABRICKS_TOKEN are injected automatically
+# by the Databricks Apps runtime — no secrets config needed.
