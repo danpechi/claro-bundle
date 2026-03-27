@@ -18,7 +18,10 @@ from mlflow.types.schema import ColSpec, Schema
 CATALOG    = "main"
 SCHEMA     = "claro"
 MODEL_NAME = f"{CATALOG}.{SCHEMA}.emotion_speech_model"
-EXPERIMENT = "claro-emotion-model-registration"
+# Build experiment path under current user's home — works in any workspace
+from databricks.sdk import WorkspaceClient as _WC
+_me        = _WC().current_user.me()
+EXPERIMENT = f"/Users/{_me.user_name}/claro-emotion-model-registration"
 
 # Resolve emotion_model.py relative to this script.
 # Use inspect.getfile() instead of __file__ — Databricks runs scripts via
