@@ -2,13 +2,14 @@
 Claro Perú — Customer Service Quality Monitor
 ==============================================
 Streamlit app with three tabs:
-  Tab 1 — Quality Monitor: dashboard from main.claro.conversations + main.claro.scores
+  Tab 1 — Quality Monitor: dashboard from {UC_CATALOG}.{UC_SCHEMA}.conversations + .scores
   Tab 2 — Audio Transcription: upload WAV/MP3 → Whisper endpoint (configurable)
-  Tab 3 — Emotion Analysis: upload WAV/MP3 → wav2vec2 emotion model endpoint
+  Tab 3 — Emotion Analysis: upload WAV/MP3 → wav2vec2 emotion model endpoint (configurable)
 """
 
 import base64
 import configparser
+import io
 import json
 import os
 from pathlib import Path
@@ -25,8 +26,14 @@ BRAND_DARK   = "#A80000"    # darker red
 BRAND_GRAY   = "#F5F5F5"    # light bg
 BRAND_TEXT   = "#1A1A1A"
 
-EMOTION_ENDPOINT = "claro-emotion-endpoint"
-DEFAULT_WHISPER_ENDPOINT = "whisper-dan"
+# ── UC config (from app env vars set by DAB, sidebar can override) ─────────
+
+UC_CATALOG = os.environ.get("UC_CATALOG", "main")
+UC_SCHEMA  = os.environ.get("UC_SCHEMA",  "claro")
+
+# Endpoint defaults from env vars injected by DAB at deploy time
+DEFAULT_EMOTION_ENDPOINT = os.environ.get("EMOTION_ENDPOINT_NAME", "")
+DEFAULT_WHISPER_ENDPOINT = os.environ.get("WHISPER_ENDPOINT_NAME", "")
 
 # ── Credentials ───────────────────────────────────────────────────────────
 
@@ -149,9 +156,9 @@ def encode_audio(uploaded_file) -> str:
     return base64.b64encode(raw).decode()
 
 
-def call_emotion_endpoint(audio_b64: str) -> dict:
-    """Call claro-emotion-endpoint with base64 audio, return {emotion, scores}."""
-    url     = f"{HOST}/serving-endpoints/{EMOTION_ENDPOINT}/invocations"
+def call_emotion_endpoint(audio_b64: str, endpoint_name: str) -> dict:
+    """Call the emotion endpoint with base64 audio, return {emotion, scores}."""
+    url     = f"{HOST}/serving-endpoints/{endpoint_name}/invocations"
     payload = {"dataframe_records": [{"audio_base64": audio_b64}]}
     r = requests.post(url, json=payload, headers=_HEADERS, timeout=120)
     r.raise_for_status()
@@ -194,20 +201,20 @@ def call_whisper_endpoint(audio_b64: str, endpoint_name: str) -> str:
 # ── Data loaders ──────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=120, show_spinner=False)
-def load_scores() -> list[dict]:
+def load_scores(catalog: str, schema: str) -> list[dict]:
     try:
         return sql_run(
-            "SELECT * FROM main.claro.scores ORDER BY created_at DESC"
+            f"SELECT * FROM {catalog}.{schema}.scores ORDER BY created_at DESC"
         )
     except Exception:
         return []
 
 
 @st.cache_data(ttl=120, show_spinner=False)
-def load_transcript(conv_id: str) -> list[dict]:
+def load_transcript(conv_id: str, catalog: str, schema: str) -> list[dict]:
     try:
         return sql_run(
-            f"SELECT turn_num, role, content FROM main.claro.conversations "
+            f"SELECT turn_num, role, content FROM {catalog}.{schema}.conversations "
             f"WHERE conv_id = '{conv_id}' ORDER BY turn_num"
         )
     except Exception:
@@ -349,6 +356,14 @@ with st.sidebar:
     )
 
     st.divider()
+    st.markdown("### 😊 Emotion Settings")
+    emotion_endpoint = st.text_input(
+        "Emotion endpoint name",
+        value=DEFAULT_EMOTION_ENDPOINT,
+        help="Name of the Databricks serving endpoint running the wav2vec2 emotion model",
+    )
+
+    st.divider()
     st.caption("Data sourced from synthetic Claro Perú conversations stored in Delta.")
 
 # ── Page header ────────────────────────────────────────────────────────────
@@ -366,189 +381,192 @@ with tab1:
 
     # ── Load data ────────────────────────────────────────────────────────
 
-    all_scores = load_scores()
+    all_scores = load_scores(UC_CATALOG, UC_SCHEMA)
 
     if not all_scores:
-        st.warning("No data found in main.claro.scores. Check that the tables were populated.")
-        st.stop()
-
-    # ── Apply filters ────────────────────────────────────────────────────
-
-    filtered = all_scores
-    if sel_channel    != "All": filtered = [r for r in filtered if r["channel"]             == sel_channel]
-    if sel_tier       != "All": filtered = [r for r in filtered if r["quality_tier"]        == sel_tier]
-    if sel_compliance != "All": filtered = [r for r in filtered if r["protocol_compliance"] == sel_compliance]
-    if sel_reason     != "All": filtered = [r for r in filtered if r["contact_reason"]      == sel_reason]
-
-    st.markdown(
-        f'<p class="claro-sub">Análisis de calidad de servicio al cliente · '
-        f'{len(filtered)} conversaciones (de {len(all_scores)} total)</p>',
-        unsafe_allow_html=True,
-    )
-    st.divider()
-
-    from collections import Counter
-
-    # ── KPIs ─────────────────────────────────────────────────────────────
-
-    REASON_LABELS = {
-        "billing":        "💳 Facturación",
-        "tech_support":   "🔧 Soporte Técnico",
-        "plan_upgrade":   "📶 Plan / Upgrade",
-        "complaint":      "⚠️ Reclamo",
-        "general_inquiry":"ℹ️ Consulta General",
-    }
-
-    total      = len(filtered)
-    comp_yes   = sum(1 for r in filtered if r.get("protocol_compliance") == "yes")
-    comp_rate  = f"{100*comp_yes//total}%" if total else "—"
-    avg_qual   = (sum(float(r.get("service_quality_score") or 0) for r in filtered) / total) if total else 0
-
-    top_reason_counter = Counter(r.get("contact_reason", "?") for r in filtered)
-    top_reason = top_reason_counter.most_common(1)[0][0].replace("_", " ").title() if total else "—"
-
-    col1, col2, col3, col4 = st.columns(4)
-    kpis = [
-        (col1, str(total),                    "Conversaciones"),
-        (col2, comp_rate,                     "Cumplimiento de Protocolo"),
-        (col3, f"{avg_qual:.1f}/5",           "Calidad de Servicio"),
-        (col4, top_reason.replace("_", " "), "Motivo Principal de Contacto"),
-    ]
-    for col, val, label in kpis:
-        with col:
-            st.markdown(
-                f'<div class="kpi-card">'
-                f'<div class="kpi-value">{val}</div>'
-                f'<div class="kpi-label">{label}</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Charts ────────────────────────────────────────────────────────────
-
-    chart_col1, chart_col2, chart_col3 = st.columns(3)
-    channels = ["Call Center", "WhatsApp", "Website", "In-Branch"]
-
-    with chart_col1:
-        st.markdown("#### Cumplimiento por Canal")
-        ch_data = {}
-        for ch in channels:
-            rows    = [r for r in filtered if r.get("channel") == ch]
-            yes_pct = (sum(1 for r in rows if r.get("protocol_compliance") == "yes") / len(rows) * 100) if rows else 0
-            ch_data[ch] = {"yes_pct": yes_pct, "n": len(rows)}
-        for ch, d in ch_data.items():
-            if d["n"] == 0:
-                continue
-            st.markdown(f"**{ch}** ({d['n']} conv.)")
-            st.progress(int(d["yes_pct"]) / 100, text=f"{d['yes_pct']:.0f}% cumple")
-
-    with chart_col2:
-        st.markdown("#### Calidad por Canal")
-        for ch in channels:
-            rows = [r for r in filtered if r.get("channel") == ch]
-            if not rows:
-                continue
-            avg = sum(float(r.get("service_quality_score") or 0) for r in rows) / len(rows)
-            st.markdown(f"**{ch}** → `{avg:.1f}/5` {'⭐' * round(avg)}")
-            st.progress(avg / 5)
-
-    with chart_col3:
-        st.markdown("#### Motivos de Contacto")
-        reason_counts = Counter(r.get("contact_reason", "?") for r in filtered)
-        for reason, count in reason_counts.most_common():
-            label = REASON_LABELS.get(reason, reason)
-            pct   = count / total * 100 if total else 0
-            st.markdown(f"{label}")
-            st.progress(pct / 100, text=f"{count} ({pct:.0f}%)")
-
-    st.divider()
-
-    # ── Conversation explorer ──────────────────────────────────────────────
-
-    st.markdown("### 🔍 Explorador de Conversaciones")
-    st.caption("Selecciona una conversación para ver la transcripción completa y los detalles de evaluación.")
-
-    TIER_COLORS = {
-        "compliant":     "🟢",
-        "partial":       "🟡",
-        "non_compliant": "🔴",
-    }
-
-    if not filtered:
-        st.info("No hay conversaciones con los filtros seleccionados.")
+        st.warning(
+            f"No data found in `{UC_CATALOG}.{UC_SCHEMA}.scores`. "
+            "Check that the tables were populated by running the claro_setup job."
+        )
     else:
-        header_cols = st.columns([1.2, 1.5, 1, 1.2, 1, 1.2])
-        for col, label in zip(header_cols, ["Conv ID", "Canal", "Escenario", "Cumplimiento", "Calidad", "Motivo"]):
-            col.markdown(f"**{label}**")
-        st.markdown("---")
 
-        for row in filtered:
-            conv_id    = row["conv_id"]
-            channel    = row.get("channel", "")
-            scenario   = row.get("scenario", "").replace("_", " ").title()
-            tier       = row.get("quality_tier", "")
-            compliance = row.get("protocol_compliance", "?")
-            qual       = float(row.get("service_quality_score") or 0)
-            reason     = REASON_LABELS.get(row.get("contact_reason", ""), row.get("contact_reason", ""))
+        # ── Apply filters ────────────────────────────────────────────────────
 
-            comp_badge = (
-                f'<span class="badge-yes">✓ Cumple</span>'
-                if compliance == "yes"
-                else f'<span class="badge-no">✗ Incumple</span>'
-            )
-            tier_dot = TIER_COLORS.get(tier, "⚪")
+        filtered = all_scores
+        if sel_channel    != "All": filtered = [r for r in filtered if r["channel"]             == sel_channel]
+        if sel_tier       != "All": filtered = [r for r in filtered if r["quality_tier"]        == sel_tier]
+        if sel_compliance != "All": filtered = [r for r in filtered if r["protocol_compliance"] == sel_compliance]
+        if sel_reason     != "All": filtered = [r for r in filtered if r["contact_reason"]      == sel_reason]
 
-            row_cols = st.columns([1.2, 1.5, 1, 1.2, 1, 1.2])
-            row_cols[0].markdown(f"`{conv_id}`")
-            row_cols[1].markdown(channel)
-            row_cols[2].markdown(scenario)
-            row_cols[3].markdown(comp_badge, unsafe_allow_html=True)
-            row_cols[4].markdown(f"{'⭐' * round(qual)} `{qual:.1f}`")
-            row_cols[5].markdown(reason)
+        st.markdown(
+            f'<p class="claro-sub">Análisis de calidad de servicio al cliente · '
+            f'{len(filtered)} conversaciones (de {len(all_scores)} total)</p>',
+            unsafe_allow_html=True,
+        )
+        st.divider()
 
-            with st.expander(f"Ver transcripción — {tier_dot} {tier.replace('_',' ').title()}"):
-                eval_col1, eval_col2, eval_col3 = st.columns(3)
-                with eval_col1:
-                    st.markdown("**Cumplimiento de Protocolo**")
-                    st.markdown(comp_badge, unsafe_allow_html=True)
-                    if row.get("compliance_rationale"):
-                        st.caption(row["compliance_rationale"][:200])
-                with eval_col2:
-                    st.markdown("**Calidad de Servicio**")
-                    st.markdown(f"{'⭐' * round(qual)} **{qual:.1f}/5**")
-                    if row.get("quality_rationale"):
-                        st.caption(row["quality_rationale"][:200])
-                with eval_col3:
-                    st.markdown("**Motivo de Contacto**")
-                    st.markdown(f"**{reason}**")
-                    if row.get("reason_rationale"):
-                        st.caption(row["reason_rationale"][:200])
+        from collections import Counter
 
-                st.markdown("---")
-                st.markdown("**Transcripción**")
-                turns = load_transcript(conv_id)
-                if turns:
-                    for turn in turns:
-                        role    = turn["role"]
-                        content = turn["content"]
-                        if role == "user":
-                            st.markdown(
-                                f'<div class="role-label">CLIENTE</div>'
-                                f'<div class="bubble-user">{content}</div>',
-                                unsafe_allow_html=True,
-                            )
-                        else:
-                            st.markdown(
-                                f'<div style="text-align:right">'
-                                f'<div class="role-label">AGENTE CLARO</div>'
-                                f'<div class="bubble-agent">{content}</div>'
-                                f'</div>',
-                                unsafe_allow_html=True,
-                            )
-                else:
-                    st.info("Transcripción no disponible.")
+        # ── KPIs ─────────────────────────────────────────────────────────────
+
+        REASON_LABELS = {
+            "billing":        "💳 Facturación",
+            "tech_support":   "🔧 Soporte Técnico",
+            "plan_upgrade":   "📶 Plan / Upgrade",
+            "complaint":      "⚠️ Reclamo",
+            "general_inquiry":"ℹ️ Consulta General",
+        }
+
+        total      = len(filtered)
+        comp_yes   = sum(1 for r in filtered if r.get("protocol_compliance") == "yes")
+        comp_rate  = f"{100*comp_yes//total}%" if total else "—"
+        avg_qual   = (sum(float(r.get("service_quality_score") or 0) for r in filtered) / total) if total else 0
+
+        top_reason_counter = Counter(r.get("contact_reason", "?") for r in filtered)
+        top_reason = top_reason_counter.most_common(1)[0][0].replace("_", " ").title() if total else "—"
+
+        col1, col2, col3, col4 = st.columns(4)
+        kpis = [
+            (col1, str(total),                    "Conversaciones"),
+            (col2, comp_rate,                     "Cumplimiento de Protocolo"),
+            (col3, f"{avg_qual:.1f}/5",           "Calidad de Servicio"),
+            (col4, top_reason.replace("_", " "), "Motivo Principal de Contacto"),
+        ]
+        for col, val, label in kpis:
+            with col:
+                st.markdown(
+                    f'<div class="kpi-card">'
+                    f'<div class="kpi-value">{val}</div>'
+                    f'<div class="kpi-label">{label}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Charts ────────────────────────────────────────────────────────────
+
+        chart_col1, chart_col2, chart_col3 = st.columns(3)
+        channels = ["Call Center", "WhatsApp", "Website", "In-Branch"]
+
+        with chart_col1:
+            st.markdown("#### Cumplimiento por Canal")
+            ch_data = {}
+            for ch in channels:
+                rows    = [r for r in filtered if r.get("channel") == ch]
+                yes_pct = (sum(1 for r in rows if r.get("protocol_compliance") == "yes") / len(rows) * 100) if rows else 0
+                ch_data[ch] = {"yes_pct": yes_pct, "n": len(rows)}
+            for ch, d in ch_data.items():
+                if d["n"] == 0:
+                    continue
+                st.markdown(f"**{ch}** ({d['n']} conv.)")
+                st.progress(int(d["yes_pct"]) / 100, text=f"{d['yes_pct']:.0f}% cumple")
+
+        with chart_col2:
+            st.markdown("#### Calidad por Canal")
+            for ch in channels:
+                rows = [r for r in filtered if r.get("channel") == ch]
+                if not rows:
+                    continue
+                avg = sum(float(r.get("service_quality_score") or 0) for r in rows) / len(rows)
+                st.markdown(f"**{ch}** → `{avg:.1f}/5` {'⭐' * round(avg)}")
+                st.progress(avg / 5)
+
+        with chart_col3:
+            st.markdown("#### Motivos de Contacto")
+            reason_counts = Counter(r.get("contact_reason", "?") for r in filtered)
+            for reason, count in reason_counts.most_common():
+                label = REASON_LABELS.get(reason, reason)
+                pct   = count / total * 100 if total else 0
+                st.markdown(f"{label}")
+                st.progress(pct / 100, text=f"{count} ({pct:.0f}%)")
+
+        st.divider()
+
+        # ── Conversation explorer ──────────────────────────────────────────────
+
+        st.markdown("### 🔍 Explorador de Conversaciones")
+        st.caption("Selecciona una conversación para ver la transcripción completa y los detalles de evaluación.")
+
+        TIER_COLORS = {
+            "compliant":     "🟢",
+            "partial":       "🟡",
+            "non_compliant": "🔴",
+        }
+
+        if not filtered:
+            st.info("No hay conversaciones con los filtros seleccionados.")
+        else:
+            header_cols = st.columns([1.2, 1.5, 1, 1.2, 1, 1.2])
+            for col, label in zip(header_cols, ["Conv ID", "Canal", "Escenario", "Cumplimiento", "Calidad", "Motivo"]):
+                col.markdown(f"**{label}**")
+            st.markdown("---")
+
+            for row in filtered:
+                conv_id    = row["conv_id"]
+                channel    = row.get("channel", "")
+                scenario   = row.get("scenario", "").replace("_", " ").title()
+                tier       = row.get("quality_tier", "")
+                compliance = row.get("protocol_compliance", "?")
+                qual       = float(row.get("service_quality_score") or 0)
+                reason     = REASON_LABELS.get(row.get("contact_reason", ""), row.get("contact_reason", ""))
+
+                comp_badge = (
+                    f'<span class="badge-yes">✓ Cumple</span>'
+                    if compliance == "yes"
+                    else f'<span class="badge-no">✗ Incumple</span>'
+                )
+                tier_dot = TIER_COLORS.get(tier, "⚪")
+
+                row_cols = st.columns([1.2, 1.5, 1, 1.2, 1, 1.2])
+                row_cols[0].markdown(f"`{conv_id}`")
+                row_cols[1].markdown(channel)
+                row_cols[2].markdown(scenario)
+                row_cols[3].markdown(comp_badge, unsafe_allow_html=True)
+                row_cols[4].markdown(f"{'⭐' * round(qual)} `{qual:.1f}`")
+                row_cols[5].markdown(reason)
+
+                with st.expander(f"Ver transcripción — {tier_dot} {tier.replace('_',' ').title()}"):
+                    eval_col1, eval_col2, eval_col3 = st.columns(3)
+                    with eval_col1:
+                        st.markdown("**Cumplimiento de Protocolo**")
+                        st.markdown(comp_badge, unsafe_allow_html=True)
+                        if row.get("compliance_rationale"):
+                            st.caption(row["compliance_rationale"][:200])
+                    with eval_col2:
+                        st.markdown("**Calidad de Servicio**")
+                        st.markdown(f"{'⭐' * round(qual)} **{qual:.1f}/5**")
+                        if row.get("quality_rationale"):
+                            st.caption(row["quality_rationale"][:200])
+                    with eval_col3:
+                        st.markdown("**Motivo de Contacto**")
+                        st.markdown(f"**{reason}**")
+                        if row.get("reason_rationale"):
+                            st.caption(row["reason_rationale"][:200])
+
+                    st.markdown("---")
+                    st.markdown("**Transcripción**")
+                    turns = load_transcript(conv_id, UC_CATALOG, UC_SCHEMA)
+                    if turns:
+                        for turn in turns:
+                            role    = turn["role"]
+                            content = turn["content"]
+                            if role == "user":
+                                st.markdown(
+                                    f'<div class="role-label">CLIENTE</div>'
+                                    f'<div class="bubble-user">{content}</div>',
+                                    unsafe_allow_html=True,
+                                )
+                            else:
+                                st.markdown(
+                                    f'<div style="text-align:right">'
+                                    f'<div class="role-label">AGENTE CLARO</div>'
+                                    f'<div class="bubble-agent">{content}</div>'
+                                    f'</div>',
+                                    unsafe_allow_html=True,
+                                )
+                    else:
+                        st.info("Transcripción no disponible.")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 2 — Audio Transcription (Whisper)
@@ -556,14 +574,21 @@ with tab1:
 
 with tab2:
     st.markdown("### 🎤 Transcripción de Audio")
-    st.markdown(
-        f"Sube un archivo de audio (WAV o MP3) y transcríbelo usando el endpoint "
-        f"**`{whisper_endpoint}`** vía Databricks Model Serving."
-    )
-    st.info(
-        "💡 Puedes cambiar el nombre del endpoint de Whisper en la barra lateral.",
-        icon="ℹ️",
-    )
+
+    if not whisper_endpoint:
+        st.warning(
+            "No Whisper endpoint configured. Enter the endpoint name in the sidebar under **Whisper Settings**.",
+            icon="⚠️",
+        )
+    else:
+        st.markdown(
+            f"Sube un archivo de audio (WAV o MP3) y transcríbelo usando el endpoint "
+            f"**`{whisper_endpoint}`** vía Databricks Model Serving."
+        )
+        st.info(
+            "💡 Puedes cambiar el nombre del endpoint de Whisper en la barra lateral.",
+            icon="ℹ️",
+        )
 
     audio_file_whisper = st.file_uploader(
         "Subir archivo de audio",
@@ -573,7 +598,7 @@ with tab2:
 
     if audio_file_whisper is not None:
         st.audio(audio_file_whisper)
-        if st.button("🔤 Transcribir", key="btn_whisper"):
+        if st.button("🔤 Transcribir", key="btn_whisper", disabled=not whisper_endpoint):
             with st.spinner("Transcribiendo con Whisper..."):
                 try:
                     audio_b64 = encode_audio(audio_file_whisper)
@@ -604,11 +629,19 @@ with tab2:
 
 with tab3:
     st.markdown("### 😊 Análisis de Emoción")
-    st.markdown(
-        f"Sube un archivo de audio (WAV, 16 kHz recomendado) y detecta la emoción "
-        f"usando el modelo **`ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition`** "
-        f"desplegado en el endpoint **`{EMOTION_ENDPOINT}`**."
-    )
+
+    if not emotion_endpoint:
+        st.warning(
+            "No emotion endpoint configured. Enter the endpoint name in the sidebar under **Emotion Settings**. "
+            "Run the `claro_setup` job first to deploy the endpoint — it will appear in the job logs.",
+            icon="⚠️",
+        )
+    else:
+        st.markdown(
+            f"Sube un archivo de audio (WAV, 16 kHz recomendado) y detecta la emoción "
+            f"usando el modelo **`ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition`** "
+            f"desplegado en el endpoint **`{emotion_endpoint}`**."
+        )
 
     EMOTION_CONFIG = {
         "angry":     {"emoji": "😠", "color": "#e53935", "label": "Enojo"},
@@ -629,11 +662,11 @@ with tab3:
 
     if audio_file_emotion is not None:
         st.audio(audio_file_emotion)
-        if st.button("🔍 Analizar Emoción", key="btn_emotion"):
+        if st.button("🔍 Analizar Emoción", key="btn_emotion", disabled=not emotion_endpoint):
             with st.spinner("Analizando emoción..."):
                 try:
                     audio_b64  = encode_audio(audio_file_emotion)
-                    result     = call_emotion_endpoint(audio_b64)
+                    result     = call_emotion_endpoint(audio_b64, emotion_endpoint)
                     emotion    = result.get("emotion", "unknown")
                     scores_raw = result.get("scores_json", "{}")
                     scores     = json.loads(scores_raw) if isinstance(scores_raw, str) else scores_raw
@@ -669,7 +702,7 @@ with tab3:
                 except Exception as e:
                     st.error(f"Error al analizar emoción: {e}")
                     st.caption(
-                        f"Verifica que el endpoint **{EMOTION_ENDPOINT}** esté en estado READY. "
+                        f"Verifica que el endpoint **{emotion_endpoint}** esté en estado READY. "
                         "El despliegue inicial puede tardar ~15 minutos."
                     )
     else:
@@ -688,7 +721,7 @@ with tab3:
 
 **Entrada esperada:** Audio WAV mono, 16 kHz (el modelo resamplea automáticamente si es necesario)
 
-**Endpoint:** `{EMOTION_ENDPOINT}` (Databricks Model Serving)
+**Endpoint:** `{emotion_endpoint or "<configurar en sidebar>"}` (Databricks Model Serving)
 
 **Formato de entrada al endpoint:**
 ```json

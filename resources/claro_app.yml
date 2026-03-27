@@ -1,6 +1,13 @@
 resources:
   apps:
     claro_app:
-      name: "claro-monitor"
+      name: "claro-monitor-${workspace.current_user.shortName}"
       description: "Claro Perú — Quality Monitor · Audio Transcription · Emotion Analysis"
       source_code_path: ..
+      config:
+        - name: UC_CATALOG
+          value: "${var.catalog}"
+        - name: UC_SCHEMA
+          value: "${var.schema}"
+        # EMOTION_ENDPOINT_NAME is set manually in the app sidebar.
+        # The claro_setup job prints the exact endpoint name in its logs.

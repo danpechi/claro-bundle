@@ -4,6 +4,14 @@ bundle:
 include:
   - resources/*.yml
 
+variables:
+  catalog:
+    description: "Unity Catalog catalog name (must already exist)"
+    default: "main"
+  schema:
+    description: "UC schema name — will be created if it does not exist"
+    default: "claro"
+
 targets:
   dev:
     default: true

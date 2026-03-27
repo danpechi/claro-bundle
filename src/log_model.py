@@ -1,26 +1,35 @@
 """
 Register the Claro Emotion Model in Unity Catalog.
 Run via the claro_setup job (Task 1 — register_model).
+
+sys.argv[1] = catalog  (default: main)
+sys.argv[2] = schema   (default: claro)
 """
 import base64
 import inspect
 import io
 import os
 import struct
+import sys
 import wave
 
 import mlflow
 from mlflow.models import ModelSignature
 from mlflow.types.schema import ColSpec, Schema
+from databricks.sdk import WorkspaceClient
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-CATALOG    = "main"
-SCHEMA     = "claro"
-MODEL_NAME = f"{CATALOG}.{SCHEMA}.emotion_speech_model"
-# Build experiment path under current user's home — works in any workspace
-from databricks.sdk import WorkspaceClient as _WC
-_me        = _WC().current_user.me()
+CATALOG = sys.argv[1] if len(sys.argv) > 1 else "main"
+SCHEMA  = sys.argv[2] if len(sys.argv) > 2 else "claro"
+
+# Derive a short, workspace-unique suffix from the current user's email
+# e.g. "dan.pechi@databricks.com" → "danpechi"  (first 8 alphanum chars)
+_w  = WorkspaceClient()
+_me = _w.current_user.me()
+_short = "".join(c for c in (_me.user_name or "").split("@")[0] if c.isalnum())[:8]
+
+MODEL_NAME = f"{CATALOG}.{SCHEMA}.emotion_speech_model_{_short}"
 EXPERIMENT = f"/Users/{_me.user_name}/claro-emotion-model-registration"
 
 # Resolve emotion_model.py relative to this script.
@@ -32,6 +41,16 @@ EMOTION_MODEL_PY = os.path.join(_HERE, "emotion_model.py")
 
 mlflow.set_registry_uri("databricks-uc")
 mlflow.set_experiment(EXPERIMENT)
+
+# ── Ensure UC schema exists ───────────────────────────────────────────────────
+
+try:
+    _w.schemas.get(f"{CATALOG}.{SCHEMA}")
+    print(f"Schema {CATALOG}.{SCHEMA} already exists.")
+except Exception:
+    print(f"Creating schema {CATALOG}.{SCHEMA} ...")
+    _w.schemas.create(name=SCHEMA, catalog_name=CATALOG)
+    print(f"✅  Schema {CATALOG}.{SCHEMA} created.")
 
 # ── Signature ─────────────────────────────────────────────────────────────────
 
@@ -73,6 +92,7 @@ pip_requirements = [
 
 print(f"Logging model → {MODEL_NAME}")
 print(f"Model file:     {EMOTION_MODEL_PY}")
+print(f"User suffix:    {_short}")
 
 with mlflow.start_run(run_name="emotion_model_registration"):
     model_info = mlflow.pyfunc.log_model(
