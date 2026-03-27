@@ -7,6 +7,14 @@ resources:
       # Task 2 creates (or updates) the Model Serving endpoint using the version just registered.
 
       tasks:
+        - task_key: gen_data
+          spark_python_task:
+            python_file: "${workspace.file_path}/src/gen_data.py"
+            parameters:
+              - "${var.catalog}"
+              - "${var.schema}"
+          environment_key: ml_env
+
         - task_key: register_model
           spark_python_task:
             python_file: "${workspace.file_path}/src/log_model.py"

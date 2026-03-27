@@ -35,6 +35,18 @@ UC_SCHEMA  = os.environ.get("UC_SCHEMA",  "claro")
 DEFAULT_EMOTION_ENDPOINT = os.environ.get("EMOTION_ENDPOINT_NAME", "")
 DEFAULT_WHISPER_ENDPOINT = os.environ.get("WHISPER_ENDPOINT_NAME", "")
 
+# ── User suffix (for user-specific table names, same logic as gen_data.py) ─
+
+@st.cache_resource
+def _get_user_suffix() -> str:
+    """Derive 8-char alphanumeric suffix from the current user's email prefix."""
+    try:
+        from databricks.sdk import WorkspaceClient
+        me = WorkspaceClient().current_user.me()
+        return "".join(c for c in (me.user_name or "").split("@")[0] if c.isalnum())[:8]
+    except Exception:
+        return os.environ.get("UC_USER_SUFFIX", "")
+
 # ── Credentials ───────────────────────────────────────────────────────────
 
 def _db_creds():
@@ -201,20 +213,20 @@ def call_whisper_endpoint(audio_b64: str, endpoint_name: str) -> str:
 # ── Data loaders ──────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=120, show_spinner=False)
-def load_scores(catalog: str, schema: str) -> list[dict]:
+def load_scores(catalog: str, schema: str, suffix: str) -> list[dict]:
+    table = f"{catalog}.{schema}.scores_{suffix}" if suffix else f"{catalog}.{schema}.scores"
     try:
-        return sql_run(
-            f"SELECT * FROM {catalog}.{schema}.scores ORDER BY created_at DESC"
-        )
+        return sql_run(f"SELECT * FROM {table} ORDER BY created_at DESC")
     except Exception:
         return []
 
 
 @st.cache_data(ttl=120, show_spinner=False)
-def load_transcript(conv_id: str, catalog: str, schema: str) -> list[dict]:
+def load_transcript(conv_id: str, catalog: str, schema: str, suffix: str) -> list[dict]:
+    table = f"{catalog}.{schema}.conversations_{suffix}" if suffix else f"{catalog}.{schema}.conversations"
     try:
         return sql_run(
-            f"SELECT turn_num, role, content FROM {catalog}.{schema}.conversations "
+            f"SELECT turn_num, role, content FROM {table} "
             f"WHERE conv_id = '{conv_id}' ORDER BY turn_num"
         )
     except Exception:
@@ -381,12 +393,14 @@ with tab1:
 
     # ── Load data ────────────────────────────────────────────────────────
 
-    all_scores = load_scores(UC_CATALOG, UC_SCHEMA)
+    _suffix    = _get_user_suffix()
+    all_scores = load_scores(UC_CATALOG, UC_SCHEMA, _suffix)
 
     if not all_scores:
+        _tbl = f"{UC_CATALOG}.{UC_SCHEMA}.scores_{_suffix}" if _suffix else f"{UC_CATALOG}.{UC_SCHEMA}.scores"
         st.warning(
-            f"No data found in `{UC_CATALOG}.{UC_SCHEMA}.scores`. "
-            "Check that the tables were populated by running the claro_setup job."
+            f"No data found in `{_tbl}`. "
+            "Run the **claro_setup** job first to populate the tables."
         )
     else:
 
@@ -546,7 +560,7 @@ with tab1:
 
                     st.markdown("---")
                     st.markdown("**Transcripción**")
-                    turns = load_transcript(conv_id, UC_CATALOG, UC_SCHEMA)
+                    turns = load_transcript(conv_id, UC_CATALOG, UC_SCHEMA, _suffix)
                     if turns:
                         for turn in turns:
                             role    = turn["role"]
