@@ -53,20 +53,33 @@ def _get_databricks_client():
 
 
 def _auth():
-    """Return (host, headers) with a fresh OAuth token on every call."""
+    """Return (host, headers).
+
+    Priority:
+    1. DATABRICKS_TOKEN — injected by Databricks Apps as the *current user's* token.
+       The user already has access to their own tables, warehouses, and endpoints.
+    2. SDK OAuth M2M — service principal (requires explicit UC/warehouse grants).
+    3. ~/.databrickscfg — local dev fallback.
+    """
+    host  = os.environ.get("DATABRICKS_HOST", "")
+    token = os.environ.get("DATABRICKS_TOKEN", "")
+    if host and token:
+        if not host.startswith("http"):
+            host = "https://" + host
+        return host.rstrip("/"), {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    # SDK fallback (M2M or local)
     try:
         w = _get_databricks_client()
         host = w.config.host or ""
         if not host.startswith("http"):
             host = "https://" + host
-        headers = {**w.config.authenticate(), "Content-Type": "application/json"}
-        return host.rstrip("/"), headers
+        return host.rstrip("/"), {**w.config.authenticate(), "Content-Type": "application/json"}
     except Exception:
-        # Local dev fallback
         cfg = configparser.ConfigParser()
         cfg.read(Path.home() / ".databrickscfg")
-        host  = cfg.get("DEFAULT", "host",  fallback="") or os.environ.get("DATABRICKS_HOST", "")
-        token = cfg.get("DEFAULT", "token", fallback="") or os.environ.get("DATABRICKS_TOKEN", "")
+        host  = cfg.get("DEFAULT", "host",  fallback="")
+        token = cfg.get("DEFAULT", "token", fallback="")
         if host and not host.startswith("http"):
             host = "https://" + host
         return host.rstrip("/"), {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
